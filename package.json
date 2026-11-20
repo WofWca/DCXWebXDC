@@ -20,6 +20,7 @@
     "watch:electron": "pnpm --filter=@deltachat-desktop/target-electron watch",
     "start:browser": "pnpm --filter=@deltachat-desktop/target-browser start",
     "build:browser": "pnpm --filter=@deltachat-desktop/target-browser build",
+    "build:webxdc": "pnpm --filter=@deltachat-desktop/target-webxdc build",
     "start:webserver": "pnpm --filter=@deltachat-desktop/target-browser start:server",
     "translations:pull": "tx pull -s -f -t && tx pull -f -a",
     "translations:convert": "node ./bin/translations/build-shared-convert-translations.mjs ./_locales",

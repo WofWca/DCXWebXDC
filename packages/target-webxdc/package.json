@@ -1,0 +1,21 @@
+{
+  "private": true,
+  "name": "@deltachat-desktop/target-webxdc",
+  "type": "module",
+  "version": "2.69.1",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "check:types": "tsc --noEmit",
+    "build": "pnpm --filter=@deltachat-desktop/frontend build && pnpm -w translations:convert && node ./bin/build.js",
+    "test": "node --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@deltachat-desktop/runtime-interface": "link:../runtime",
+    "@deltachat-desktop/shared": "link:../shared",
+    "@deltachat/jsonrpc-client": "catalog:",
+    "@webxdc/types": "catalog:"
+  },
+  "devDependencies": {
+    "esbuild": "catalog:"
+  }
+}
