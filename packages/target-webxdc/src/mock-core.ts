@@ -3,8 +3,9 @@
 // Messages are WebXDC status updates, so everyone in the real chat receives
 // them. 1:1 messages are only hidden by the receiving apps, not encrypted.
 //
-// shortcut: only text messages, no attachments, reactions, edits, unread
-// counters or contact management. Extend `handlers` when the UI needs more.
+// shortcut: only text messages, no attachments, reactions, edits or contact
+// management. Unread state is in memory only: on every launch the history
+// counts as read. Extend `handlers` when the UI needs more.
 
 import type { T } from '@deltachat/jsonrpc-client'
 import type { ReceivedStatusUpdate, Webxdc } from '@webxdc/types'
@@ -28,6 +29,7 @@ const SELF_ID = 1 // DC_CONTACT_ID_SELF
 const INFO_ID = 2 // DC_CONTACT_ID_INFO
 const DM_CHAT_BASE = 1000 // 1:1 chat id = DM_CHAT_BASE + contact id
 const FIRST_ID = 10 // ids below 10 are reserved by core
+const STATE_IN_FRESH = 10
 const STATE_IN_SEEN = 16
 const STATE_OUT_DELIVERED = 26
 const CONNECTIVITY_CONNECTED = 4000
@@ -39,6 +41,7 @@ type StoredMessage = {
   fromId: number
   text: string
   time: number
+  seen: boolean
 }
 
 export const DM_WARNING =
@@ -140,7 +143,9 @@ export class MockCore {
 
   private store(chatId: number, fromId: number, text: string, time: number) {
     const id = FIRST_ID + this.messages.length
-    this.messages.push({ id, chatId, fromId, text, time })
+    // replayed history, own and info messages never count as unread
+    const seen = this.replaying || fromId === SELF_ID || fromId === INFO_ID
+    this.messages.push({ id, chatId, fromId, text, time, seen })
     return id
   }
 
@@ -164,6 +169,23 @@ export class MockCore {
     this.emit({ kind: 'MsgsChanged', chatId: CHAT_ID, msgId: 0 })
     this.emit({ kind: 'ChatlistItemChanged', chatId: CHAT_ID })
     this.emit({ kind: 'ChatlistChanged' })
+  }
+
+  private unread(chatId: number) {
+    return this.chatMessages(chatId).filter(m => !m.seen)
+  }
+
+  private markSeen(msgs: StoredMessage[]) {
+    const chats = new Set(msgs.filter(m => !m.seen).map(m => m.chatId))
+    msgs.forEach(m => (m.seen = true))
+    for (const chatId of chats) {
+      this.emit({ kind: 'MsgsNoticed', chatId })
+      this.emit({ kind: 'ChatlistItemChanged', chatId })
+    }
+  }
+
+  private chatIds() {
+    return [CHAT_ID, ...this.contacts.map(c => DM_CHAT_BASE + c.id)]
   }
 
   private emit(event: T.EventType) {
@@ -250,7 +272,12 @@ export class MockCore {
       hasLocation: false,
       hasHtml: false,
       viewType: 'Text',
-      state: m.fromId === SELF_ID ? STATE_OUT_DELIVERED : STATE_IN_SEEN,
+      state:
+        m.fromId === SELF_ID
+          ? STATE_OUT_DELIVERED
+          : m.seen
+            ? STATE_IN_SEEN
+            : STATE_IN_FRESH,
       error: null,
       timestamp: m.time,
       sortTimestamp: m.time,
@@ -303,6 +330,7 @@ export class MockCore {
         chatType: 'Single',
         contactIds: [c.id],
         color: color(c.addr),
+        freshMessageCounter: this.unread(chatId).length,
       }
     }
     return {
@@ -318,7 +346,7 @@ export class MockCore {
       contactIds: [SELF_ID, ...this.contacts.map(c => c.id)],
       pastContactIds: [],
       color: color('chat'),
-      freshMessageCounter: 0,
+      freshMessageCounter: this.unread(CHAT_ID).length,
       isContactRequest: false,
       isDeviceChat: false,
       selfInGroup: true,
@@ -354,7 +382,7 @@ export class MockCore {
       summaryStatus: last ? this.message(last.id).state : 0,
       isEncrypted: true,
       isGroup,
-      freshMessageCounter: 0,
+      freshMessageCounter: chat.freshMessageCounter,
       isSelfTalk: false,
       isDeviceTalk: false,
       isSendingLocation: false,
@@ -413,7 +441,7 @@ export class MockCore {
 
     // chat list
     get_chatlist_entries: (_acc: number, _flags: unknown, query?: string) =>
-      [CHAT_ID, ...this.contacts.map(c => DM_CHAT_BASE + c.id)]
+      this.chatIds()
         .filter(id =>
           this.chat(id)
             .name.toLowerCase()
@@ -437,11 +465,20 @@ export class MockCore {
       this.dmContact(chatId) // throws for unknown contacts
       return chatId
     },
-    get_fresh_msgs: () => [],
-    get_fresh_msg_cnt: () => 0,
-    get_first_unread_message_of_chat: () => null,
-    marknoticed_chat: () => null,
-    markseen_msgs: () => null,
+    get_fresh_msgs: () =>
+      this.chatIds().flatMap(id => this.unread(id).map(m => m.id)),
+    get_fresh_msg_cnt: (_acc: number, chatId: number) =>
+      this.unread(chatId).length,
+    get_first_unread_message_of_chat: (_acc: number, chatId: number) =>
+      this.unread(chatId)[0]?.id ?? null,
+    marknoticed_chat: (_acc: number, chatId: number) => {
+      this.markSeen(this.chatMessages(chatId))
+      return null
+    },
+    markseen_msgs: (_acc: number, ids: number[]) => {
+      this.markSeen(this.messages.filter(m => ids.includes(m.id)))
+      return null
+    },
     get_draft: () => null,
     misc_set_draft: () => null,
     remove_draft: () => null,

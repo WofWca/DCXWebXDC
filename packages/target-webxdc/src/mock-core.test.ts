@@ -152,3 +152,50 @@ test('1:1 messages reach only the recipient, peers are discovered on launch', as
   assert.deepEqual(dmUpdate.notify, { 'bob@example.org': 'alice: psst bob' })
   assert.equal(net.log.find(u => u.payload.hello).notify, undefined)
 })
+
+test('unread: history is read, new incoming messages are not', async () => {
+  const net = network()
+  const tick = () => new Promise(r => setTimeout(r))
+  const alice = new MockCore(net.peer('alice'))
+  await alice.handle('misc_send_text_message', [ACCOUNT_ID, CHAT_ID, 'old'])
+
+  const bob = new MockCore(net.peer('bob'))
+  await tick()
+  const fresh = async (chatId: number) =>
+    (await bob.handle('get_chatlist_items_by_entries', [ACCOUNT_ID, [chatId]]))[
+      chatId
+    ].freshMessageCounter
+  assert.equal(await fresh(CHAT_ID), 0) // replayed history counts as read
+
+  const first = await alice.handle('misc_send_text_message', [
+    ACCOUNT_ID,
+    CHAT_ID,
+    'new 1',
+  ])
+  const second = await alice.handle('misc_send_text_message', [
+    ACCOUNT_ID,
+    CHAT_ID,
+    'new 2',
+  ])
+  await bob.handle('misc_send_text_message', [ACCOUNT_ID, CHAT_ID, 'mine'])
+  await tick()
+  assert.equal(await fresh(CHAT_ID), 2) // own messages don't count
+  assert.deepEqual(await bob.handle('get_fresh_msgs', [ACCOUNT_ID]), [
+    first,
+    second,
+  ])
+  assert.equal(
+    await bob.handle('get_first_unread_message_of_chat', [ACCOUNT_ID, CHAT_ID]),
+    first
+  )
+
+  // the frontend only asks to mark messages in a fresh state (10) as seen
+  const state = async (id: number) =>
+    (await bob.handle('get_message', [ACCOUNT_ID, id])).state
+  assert.equal(await state(second), 10)
+  await bob.handle('markseen_msgs', [ACCOUNT_ID, [second]]) // exactly that one
+  assert.equal(await state(second), 16)
+  assert.equal(await fresh(CHAT_ID), 1)
+  await bob.handle('marknoticed_chat', [ACCOUNT_ID, CHAT_ID])
+  assert.equal(await fresh(CHAT_ID), 0)
+})
