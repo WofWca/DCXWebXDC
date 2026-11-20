@@ -87,6 +87,7 @@ export class MockCore {
       configured_addr: webxdc.selfAddr,
       displayname: webxdc.selfName,
       selfstatus: '',
+      'ui.lastchatid': String(CHAT_ID),
     }
     this.ready = webxdc
       .setUpdateListener(update => this.onUpdate(update), 0)
