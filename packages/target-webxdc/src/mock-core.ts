@@ -44,6 +44,8 @@ type StoredMessage = {
   seen: boolean
 }
 
+export const EVERYONE_INTRO = 'Waiting for others to open the app…'
+
 export const DM_WARNING =
   'Everyone in the chat where this app is shared can read messages in this chat.'
 
@@ -89,6 +91,7 @@ export class MockCore {
       selfstatus: '',
       'ui.lastchatid': String(CHAT_ID),
     }
+    this.store(CHAT_ID, INFO_ID, EVERYONE_INTRO, Math.floor(Date.now() / 1000))
     this.ready = webxdc
       .setUpdateListener(update => this.onUpdate(update), 0)
       .then(() => {

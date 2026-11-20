@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MockCore, ACCOUNT_ID, CHAT_ID, DM_WARNING } from './mock-core.ts'
+import {
+  MockCore,
+  ACCOUNT_ID,
+  CHAT_ID,
+  DM_WARNING,
+  EVERYONE_INTRO,
+} from './mock-core.ts'
 
 // In-memory webxdc network: every peer receives every update, own ones included.
 function network() {
@@ -79,6 +85,7 @@ test('late joiner replays history without events, ignores junk updates', async (
   assert.deepEqual(
     msgs.map(m => [m.text, m.isInfo]),
     [
+      [EVERYONE_INTRO, true],
       ['alice joined the group.', true],
       ['first', false],
       ['You joined the group.', true],
