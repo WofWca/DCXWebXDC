@@ -3,8 +3,11 @@
 Runs the Delta Chat frontend inside Delta Chat, as a `.xdc` app.
 
 There is no core: `src/mock-core.ts` answers the frontend's JSON-RPC calls in the page.
-It has one account and one group chat. Every message is a WebXDC status update,
-so everyone in the real chat where the app was shared sees it.
+It has one account, one group chat, and a 1:1 chat with every peer who has
+opened the app (each peer announces itself with a "hello" update on first launch).
+Every message is a WebXDC status update, so everyone in the real chat where the
+app was shared receives it. 1:1 messages are only hidden by the other apps, not
+encrypted, and each 1:1 chat starts with a notice saying so.
 
 Only text messages work. Unsupported RPC methods are rejected with
 "... is not supported in the WebXDC version". To support more of the UI, add

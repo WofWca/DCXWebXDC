@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MockCore, ACCOUNT_ID, CHAT_ID } from './mock-core.ts'
+import { MockCore, ACCOUNT_ID, CHAT_ID, DM_WARNING } from './mock-core.ts'
 
 // In-memory webxdc network: every peer receives every update, own ones included.
 function network() {
@@ -85,4 +85,57 @@ test('late joiner replays history without events, ignores junk updates', async (
 test('unknown methods are rejected', async () => {
   const core = new MockCore(network().peer('alice'))
   await assert.rejects(core.handle('delete_account', [1]), /not supported/)
+})
+
+test('1:1 messages reach only the recipient, peers are discovered on launch', async () => {
+  const net = network()
+  const alice = new MockCore(net.peer('alice'))
+  const bob = new MockCore(net.peer('bob'))
+  const carol = new MockCore(net.peer('carol'))
+  await new Promise(r => setTimeout(r))
+
+  // hello updates: everyone has a 1:1 chat with everyone, before writing anything
+  const aliceChats = await alice.handle('get_chatlist_entries', [ACCOUNT_ID])
+  assert.equal(aliceChats.length, 3) // group + bob + carol
+  const dm = await alice.handle('create_chat_by_contact_id', [ACCOUNT_ID, 10])
+  assert.equal(
+    (await alice.handle('get_contact', [ACCOUNT_ID, 10])).name,
+    'bob'
+  )
+
+  const [warning] = await alice.handle('get_message_ids', [ACCOUNT_ID, dm])
+  const info = await alice.handle('get_message', [ACCOUNT_ID, warning])
+  assert.equal(info.isInfo, true)
+  assert.equal(info.text, DM_WARNING)
+
+  await alice.handle('send_msg', [ACCOUNT_ID, dm, { text: 'psst bob' }])
+  await new Promise(r => setTimeout(r))
+  const texts = async (core: MockCore) => {
+    const chats = await core.handle('get_chatlist_entries', [ACCOUNT_ID])
+    const all = []
+    for (const chatId of chats) {
+      for (const id of await core.handle('get_message_ids', [
+        ACCOUNT_ID,
+        chatId,
+      ]))
+        all.push({
+          chatId,
+          text: (await core.handle('get_message', [ACCOUNT_ID, id])).text,
+        })
+    }
+    return all
+  }
+  const bobGot = (await texts(bob)).find(m => m.text === 'psst bob')
+  assert.ok(bobGot)
+  assert.notEqual(bobGot.chatId, CHAT_ID)
+  const bobDm = await bob.handle('get_full_chat_by_id', [
+    ACCOUNT_ID,
+    bobGot.chatId,
+  ])
+  assert.equal(bobDm.chatType, 'Single')
+  assert.equal(bobDm.name, 'alice')
+  assert.ok(!(await texts(carol)).some(m => m.text === 'psst bob'))
+
+  // 1:1 text must not leak into the host chat via the summary
+  assert.ok(!net.log.some(u => u.summary?.includes('psst')))
 })

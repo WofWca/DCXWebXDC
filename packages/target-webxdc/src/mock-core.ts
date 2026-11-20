@@ -1,10 +1,10 @@
 // A tiny in-page stand-in for the deltachat JSON-RPC server.
-// One configured account with one group chat. Messages in that chat are
-// WebXDC status updates, so everyone in the real chat sees them.
+// One configured account with one group chat plus a 1:1 chat per peer.
+// Messages are WebXDC status updates, so everyone in the real chat receives
+// them. 1:1 messages are only hidden by the receiving apps, not encrypted.
 //
-// shortcut: only text messages in a single group chat, no attachments,
-// reactions, edits, unread counters or contact management. Extend `handlers`
-// when the UI needs more.
+// shortcut: only text messages, no attachments, reactions, edits, unread
+// counters or contact management. Extend `handlers` when the UI needs more.
 
 import type { T } from '@deltachat/jsonrpc-client'
 import type { ReceivedStatusUpdate, Webxdc } from '@webxdc/types'
@@ -12,21 +12,37 @@ import type { ReceivedStatusUpdate, Webxdc } from '@webxdc/types'
 export type Payload = {
   addr: string
   name: string
-  text: string
   time: number
   nonce: string
+  /** absent for `hello` */
+  text?: string
+  /** recipient's addr for 1:1 messages, absent for the group chat */
+  to?: string
+  /** sent once on first launch so peers discover us before we write anything */
+  hello?: true
 }
 
 export const ACCOUNT_ID = 1
 export const CHAT_ID = 10
 const SELF_ID = 1 // DC_CONTACT_ID_SELF
+const INFO_ID = 2 // DC_CONTACT_ID_INFO
+const DM_CHAT_BASE = 1000 // 1:1 chat id = DM_CHAT_BASE + contact id
 const FIRST_ID = 10 // ids below 10 are reserved by core
 const STATE_IN_SEEN = 16
 const STATE_OUT_DELIVERED = 26
 const CONNECTIVITY_CONNECTED = 4000
 
 type StoredContact = { id: number; addr: string; name: string }
-type StoredMessage = { id: number; fromId: number; text: string; time: number }
+type StoredMessage = {
+  id: number
+  chatId: number
+  fromId: number
+  text: string
+  time: number
+}
+
+export const DM_WARNING =
+  'Everyone in the chat where this app is shared can read messages in this chat.'
 
 function color(seed: string) {
   let h = 0
@@ -40,9 +56,10 @@ function isPayload(p: any): p is Payload {
     p &&
     typeof p.addr === 'string' &&
     typeof p.name === 'string' &&
-    typeof p.text === 'string' &&
     typeof p.nonce === 'string' &&
-    Number.isFinite(p.time)
+    Number.isFinite(p.time) &&
+    (p.hello === true || typeof p.text === 'string') &&
+    (p.to === undefined || typeof p.to === 'string')
   )
 }
 
@@ -54,7 +71,7 @@ export class MockCore {
   private wakeEventLoop = () => {}
   private pendingSends = new Map<string, (msgId: number) => void>()
   private replaying = true
-  private chatSize = 0 // member count the UI last heard about
+  private announced = false
   readonly ready: Promise<void>
 
   // not a parameter property: node's type stripping (used by the tests) can't handle those
@@ -72,7 +89,7 @@ export class MockCore {
       .setUpdateListener(update => this.onUpdate(update), 0)
       .then(() => {
         this.replaying = false
-        this.chatSize = this.contacts.length
+        if (!this.announced) this.send({ hello: true })
       })
   }
 
@@ -87,32 +104,53 @@ export class MockCore {
 
   private onUpdate({ payload }: ReceivedStatusUpdate<Payload>) {
     if (!isPayload(payload)) return
+    const self = this.webxdc.selfAddr
     const fromId =
-      payload.addr === this.webxdc.selfAddr
+      payload.addr === self
         ? SELF_ID
-        : this.contactFor(payload.addr, payload.name).id
-    const id = FIRST_ID + this.messages.length
-    this.messages.push({ id, fromId, text: payload.text, time: payload.time })
+        : this.contactFor(payload.addr, payload.name, payload.time).id
+    if (fromId === SELF_ID) this.announced = true
+    if (payload.hello) return
+
+    let chatId = CHAT_ID
+    if (payload.to !== undefined) {
+      const peer =
+        fromId === SELF_ID
+          ? this.contacts.find(c => c.addr === payload.to)
+          : payload.to === self
+            ? this.contacts.find(c => c.id === fromId)
+            : undefined // someone else's 1:1 message
+      if (!peer) return
+      chatId = DM_CHAT_BASE + peer.id
+    }
+    const id = this.store(chatId, fromId, payload.text ?? '', payload.time)
 
     this.pendingSends.get(payload.nonce)?.(id)
     this.pendingSends.delete(payload.nonce)
 
     if (this.replaying) return
-    if (this.chatSize !== this.contacts.length) {
-      this.chatSize = this.contacts.length
-      this.emit({ kind: 'ChatModified', chatId: CHAT_ID })
-    }
     const kind = fromId === SELF_ID ? 'MsgsChanged' : 'IncomingMsg'
-    this.emit({ kind, chatId: CHAT_ID, msgId: id })
-    this.emit({ kind: 'ChatlistItemChanged', chatId: CHAT_ID })
+    this.emit({ kind, chatId, msgId: id })
+    this.emit({ kind: 'ChatlistItemChanged', chatId })
     this.emit({ kind: 'ChatlistChanged' })
   }
 
-  private contactFor(addr: string, name: string) {
+  private store(chatId: number, fromId: number, text: string, time: number) {
+    const id = FIRST_ID + this.messages.length
+    this.messages.push({ id, chatId, fromId, text, time })
+    return id
+  }
+
+  private contactFor(addr: string, name: string, time: number) {
     let contact = this.contacts.find(c => c.addr === addr)
     if (!contact) {
       contact = { id: FIRST_ID + this.contacts.length, addr, name }
       this.contacts.push(contact)
+      this.store(DM_CHAT_BASE + contact.id, INFO_ID, DM_WARNING, time)
+      if (!this.replaying) {
+        this.emit({ kind: 'ChatModified', chatId: CHAT_ID })
+        this.emit({ kind: 'ChatlistChanged' })
+      }
     }
     contact.name = name
     return contact
@@ -123,22 +161,32 @@ export class MockCore {
     this.wakeEventLoop()
   }
 
-  private sendText(text: string): Promise<number> {
-    const nonce = crypto.randomUUID()
+  private send(fields: Pick<Payload, 'text' | 'to' | 'hello'>) {
     const payload: Payload = {
       addr: this.webxdc.selfAddr,
       name: this.config.displayname || this.webxdc.selfName,
-      text,
       time: Math.floor(Date.now() / 1000),
-      nonce,
+      nonce: crypto.randomUUID(),
+      ...fields,
     }
+    // a summary is shown to the whole host chat, so only set it for the group
+    const isGroupMsg = fields.text !== undefined && fields.to === undefined
+    const summary = `${payload.name}: ${fields.text}`.slice(0, 100)
+    this.webxdc.sendUpdate(isGroupMsg ? { payload, summary } : { payload }, '')
+    return payload.nonce
+  }
+
+  private sendText(chatId: number, text: string): Promise<number> {
+    const to = chatId === CHAT_ID ? undefined : this.dmContact(chatId).addr
+    const nonce = this.send({ text, to })
     // resolved when our own update comes back through the update listener
-    const sent = new Promise<number>(r => this.pendingSends.set(nonce, r))
-    this.webxdc.sendUpdate(
-      { payload, summary: `${payload.name}: ${text}`.slice(0, 100) },
-      ''
-    )
-    return sent
+    return new Promise<number>(r => this.pendingSends.set(nonce, r))
+  }
+
+  private dmContact(chatId: number) {
+    const contact = this.contacts.find(c => c.id === chatId - DM_CHAT_BASE)
+    if (!contact) throw new Error(`chat ${chatId} not found`)
+    return contact
   }
 
   private contact(id: number): T.Contact {
@@ -174,7 +222,7 @@ export class MockCore {
     if (!m) throw new Error(`message ${id} not found`)
     return {
       id: m.id,
-      chatId: CHAT_ID,
+      chatId: m.chatId,
       fromId: m.fromId,
       quote: null,
       parentId: null,
@@ -191,7 +239,7 @@ export class MockCore {
       hasDeviatingTimestamp: false,
       subject: '',
       showPadlock: true,
-      isInfo: false,
+      isInfo: m.fromId === INFO_ID,
       isForwarded: false,
       isBot: false,
       systemMessageType: 'Unknown',
@@ -200,7 +248,7 @@ export class MockCore {
       dimensionsHeight: 0,
       dimensionsWidth: 0,
       overrideSenderName: null,
-      sender: this.contact(m.fromId),
+      sender: this.contact(m.fromId === INFO_ID ? SELF_ID : m.fromId),
       file: null,
       fileMime: null,
       fileBytes: 0,
@@ -226,7 +274,18 @@ export class MockCore {
     } satisfies T.Account
   }
 
-  private chat(): T.FullChat {
+  private chat(chatId: number): T.FullChat {
+    if (chatId !== CHAT_ID) {
+      const c = this.dmContact(chatId)
+      return {
+        ...this.chat(CHAT_ID),
+        id: chatId,
+        name: c.name,
+        chatType: 'Single',
+        contactIds: [c.id],
+        color: color(c.addr),
+      }
+    }
     return {
       id: CHAT_ID,
       name: 'Everyone',
@@ -252,9 +311,14 @@ export class MockCore {
     } satisfies T.FullChat
   }
 
-  private chatlistItem(): T.ChatListItemFetchResult {
-    const chat = this.chat()
-    const last = this.messages.at(-1)
+  private chatMessages(chatId: number) {
+    return this.messages.filter(m => m.chatId === chatId)
+  }
+
+  private chatlistItem(chatId: number): T.ChatListItemFetchResult {
+    const chat = this.chat(chatId)
+    const isGroup = chatId === CHAT_ID
+    const last = this.chatMessages(chatId).at(-1)
     return {
       kind: 'ChatListItem',
       id: chat.id,
@@ -263,11 +327,14 @@ export class MockCore {
       color: chat.color,
       chatType: chat.chatType,
       lastUpdated: last ? last.time * 1000 : null,
-      summaryText1: last ? this.contact(last.fromId).displayName : '',
+      summaryText1:
+        last && isGroup && last.fromId !== INFO_ID
+          ? this.contact(last.fromId).displayName
+          : '',
       summaryText2: last?.text ?? '',
       summaryStatus: last ? this.message(last.id).state : 0,
       isEncrypted: true,
-      isGroup: true,
+      isGroup,
       freshMessageCounter: 0,
       isSelfTalk: false,
       isDeviceTalk: false,
@@ -277,7 +344,7 @@ export class MockCore {
       isPinned: false,
       isMuted: false,
       isContactRequest: false,
-      dmChatContact: null,
+      dmChatContact: isGroup ? null : chat.contactIds[0],
       freshness: 'Normal',
       lastMessageType: last ? 'Text' : null,
       lastMessageId: last?.id ?? null,
@@ -326,12 +393,31 @@ export class MockCore {
     },
 
     // chat list
-    get_chatlist_entries: () => [CHAT_ID],
+    get_chatlist_entries: (_acc: number, _flags: unknown, query?: string) =>
+      [CHAT_ID, ...this.contacts.map(c => DM_CHAT_BASE + c.id)]
+        .filter(id =>
+          this.chat(id)
+            .name.toLowerCase()
+            .includes((query ?? '').toLowerCase())
+        )
+        .map(id => ({ id, time: this.chatMessages(id).at(-1)?.time ?? 0 }))
+        .sort((a, b) => b.time - a.time)
+        .map(c => c.id),
     get_chatlist_items_by_entries: (_acc: number, ids: number[]) =>
-      this.byId(ids, () => this.chatlistItem()),
-    get_full_chat_by_id: () => this.chat(),
-    get_basic_chat_info: () => this.chat(),
-    get_chat_contacts: () => this.chat().contactIds,
+      this.byId(ids, id => this.chatlistItem(id)),
+    get_full_chat_by_id: (_acc: number, chatId: number) => this.chat(chatId),
+    get_basic_chat_info: (_acc: number, chatId: number) => this.chat(chatId),
+    get_chat_contacts: (_acc: number, chatId: number) =>
+      this.chat(chatId).contactIds,
+    get_chat_id_by_contact_id: (_acc: number, contactId: number) =>
+      this.contacts.some(c => c.id === contactId)
+        ? DM_CHAT_BASE + contactId
+        : null,
+    create_chat_by_contact_id: (_acc: number, contactId: number) => {
+      const chatId = DM_CHAT_BASE + contactId
+      this.dmContact(chatId) // throws for unknown contacts
+      return chatId
+    },
     get_fresh_msgs: () => [],
     get_fresh_msg_cnt: () => 0,
     get_first_unread_message_of_chat: () => null,
@@ -345,9 +431,10 @@ export class MockCore {
     get_pinned_messages: () => [],
 
     // messages
-    get_message_list_items: () =>
-      this.messages.map(m => ({ kind: 'message', msg_id: m.id })),
-    get_message_ids: () => this.messages.map(m => m.id),
+    get_message_list_items: (_acc: number, chatId: number) =>
+      this.chatMessages(chatId).map(m => ({ kind: 'message', msg_id: m.id })),
+    get_message_ids: (_acc: number, chatId: number) =>
+      this.chatMessages(chatId).map(m => m.id),
     get_message: (_acc: number, id: number) => this.message(id),
     get_messages: (_acc: number, ids: number[]) =>
       this.byId(ids, id => {
@@ -357,12 +444,12 @@ export class MockCore {
           return { kind: 'loadingError', error: String(e) }
         }
       }),
-    send_msg: (_acc: number, _chat: number, data: T.MessageData) => {
+    send_msg: (_acc: number, chatId: number, data: T.MessageData) => {
       if (data.file) throw new Error('Attachments are not supported')
-      return this.sendText(data.text ?? '')
+      return this.sendText(chatId, data.text ?? '')
     },
-    misc_send_text_message: (_acc: number, _chat: number, text: string) =>
-      this.sendText(text),
+    misc_send_text_message: (_acc: number, chatId: number, text: string) =>
+      this.sendText(chatId, text),
 
     // contacts
     get_contact: (_acc: number, id: number) => this.contact(id),
