@@ -67,19 +67,26 @@ test('late joiner replays history without events, ignores junk updates', async (
   await new Promise(r => setTimeout(r))
 
   const carol = new MockCore(net.peer('carol'))
-  const items = await carol.handle('get_message_list_items', [
-    ACCOUNT_ID,
-    CHAT_ID,
-    false,
-    false,
-  ])
-  assert.equal(items.length, 1)
-  const pending = carol.handle('get_next_event_batch', [])
-  const nothing = Symbol()
-  assert.equal(
-    await Promise.race([pending, new Promise(r => setTimeout(r, 20, nothing))]),
-    nothing
+  await carol.ready
+  await new Promise(r => setTimeout(r)) // carol's own hello arrives
+  const ids = await carol.handle('get_message_ids', [ACCOUNT_ID, CHAT_ID])
+  const msgs = []
+  for (const id of ids) {
+    msgs.push(await carol.handle('get_message', [ACCOUNT_ID, id]))
+  }
+  assert.deepEqual(
+    msgs.map(m => [m.text, m.isInfo]),
+    [
+      ['alice joined the group.', true],
+      ['first', false],
+      ['You joined the group.', true],
+    ]
   )
+
+  // only carol's own live join produces events, the replayed history doesn't
+  const events = await carol.handle('get_next_event_batch', [])
+  assert.ok(!events.some((e: any) => e.event.kind === 'IncomingMsg'))
+  assert.ok(events.every((e: any) => e.event.msgId !== ids[1]))
 })
 
 test('unknown methods are rejected', async () => {

@@ -109,7 +109,10 @@ export class MockCore {
       payload.addr === self
         ? SELF_ID
         : this.contactFor(payload.addr, payload.name, payload.time).id
-    if (fromId === SELF_ID) this.announced = true
+    if (fromId === SELF_ID && !this.announced) {
+      this.announced = true
+      this.addGroupInfo('You joined the group.', payload.time)
+    }
     if (payload.hello) return
 
     let chatId = CHAT_ID
@@ -147,13 +150,20 @@ export class MockCore {
       contact = { id: FIRST_ID + this.contacts.length, addr, name }
       this.contacts.push(contact)
       this.store(DM_CHAT_BASE + contact.id, INFO_ID, DM_WARNING, time)
-      if (!this.replaying) {
-        this.emit({ kind: 'ChatModified', chatId: CHAT_ID })
-        this.emit({ kind: 'ChatlistChanged' })
-      }
+      this.addGroupInfo(`${name} joined the group.`, time)
     }
     contact.name = name
     return contact
+  }
+
+  private addGroupInfo(text: string, time: number) {
+    this.store(CHAT_ID, INFO_ID, text, time)
+    if (this.replaying) return
+    this.emit({ kind: 'ChatModified', chatId: CHAT_ID })
+    // msgId 0 makes an open chat reload its message list
+    this.emit({ kind: 'MsgsChanged', chatId: CHAT_ID, msgId: 0 })
+    this.emit({ kind: 'ChatlistItemChanged', chatId: CHAT_ID })
+    this.emit({ kind: 'ChatlistChanged' })
   }
 
   private emit(event: T.EventType) {
