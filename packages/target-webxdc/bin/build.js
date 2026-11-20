@@ -1,6 +1,10 @@
 //@ts-check
 // Packs the already built frontend (packages/frontend/html-dist) together
 // with the WebXDC runtime into dist/deltachat.xdc
+//
+// By default it leaves out the bundled fonts (system fonts and emoji are used
+// instead) and the optional chat background images, to keep the .xdc small.
+// Pass --full to keep them.
 import { build } from 'esbuild'
 import { cp, mkdir, readdir, readFile, rm, writeFile } from 'fs/promises'
 import { dirname, join, relative } from 'path'
@@ -11,11 +15,22 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const repo = join(root, '../..')
 const app = join(root, 'dist/app')
 const xdc = join(root, 'dist/deltachat.xdc')
+const full = process.argv.includes('--full')
 
 await rm(join(root, 'dist'), { recursive: true, force: true })
 
-// help pages and bundled xdc apps are not reachable without a real core
-const skip = ['/help', '/xdcs', '/main.html']
+const skip = [
+  // help pages and bundled xdc apps are not reachable without a real core
+  '/help',
+  '/xdcs',
+  '/main.html',
+  // only used by the Electron app (tray icon, calls, drag-out) or as favicon
+  '/images/tray',
+  '/audio/ringtone-afro-nigeria-short.opus',
+  '/images/electron-file-drag-out.png',
+  '/images/deltachat.ico',
+]
+if (!full) skip.push('/fonts', '/images/backgrounds')
 await cp(join(repo, 'packages/frontend/html-dist'), app, {
   recursive: true,
   filter: src => !src.endsWith('.map') && !skip.some(s => src.endsWith(s)),
