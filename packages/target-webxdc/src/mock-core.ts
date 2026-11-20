@@ -179,10 +179,19 @@ export class MockCore {
       nonce: crypto.randomUUID(),
       ...fields,
     }
-    // a summary is shown to the whole host chat, so only set it for the group
-    const isGroupMsg = fields.text !== undefined && fields.to === undefined
-    const summary = `${payload.name}: ${fields.text}`.slice(0, 100)
-    this.webxdc.sendUpdate(isGroupMsg ? { payload, summary } : { payload }, '')
+    if (fields.text === undefined) {
+      this.webxdc.sendUpdate({ payload }, '')
+      return payload.nonce
+    }
+    const preview = `${payload.name}: ${fields.text}`.slice(0, 100)
+    // the host shows the summary to the whole chat, so 1:1 messages get none;
+    // notify only alerts the listed addresses ("*" = everyone but the sender)
+    this.webxdc.sendUpdate(
+      fields.to === undefined
+        ? { payload, summary: preview, notify: { '*': preview } }
+        : { payload, notify: { [fields.to]: preview } },
+      ''
+    )
     return payload.nonce
   }
 

@@ -43,6 +43,8 @@ test('messages travel between peers as webxdc updates', async () => {
   assert.equal(own.text, 'hi bob')
   assert.equal(own.fromId, 1) // self
 
+  assert.deepEqual(net.log.at(-1).notify, { '*': 'alice: hi bob' })
+
   const bobMsg = await bob.handle('get_message', [ACCOUNT_ID, msgId])
   assert.equal(bobMsg.text, 'hi bob')
   assert.equal(bobMsg.sender.displayName, 'alice')
@@ -143,6 +145,10 @@ test('1:1 messages reach only the recipient, peers are discovered on launch', as
   assert.equal(bobDm.name, 'alice')
   assert.ok(!(await texts(carol)).some(m => m.text === 'psst bob'))
 
-  // 1:1 text must not leak into the host chat via the summary
+  // 1:1 text must not leak into the host chat via the summary,
+  // and only the recipient gets a notification
   assert.ok(!net.log.some(u => u.summary?.includes('psst')))
+  const dmUpdate = net.log.find(u => u.payload.text === 'psst bob')
+  assert.deepEqual(dmUpdate.notify, { 'bob@example.org': 'alice: psst bob' })
+  assert.equal(net.log.find(u => u.payload.hello).notify, undefined)
 })
