@@ -66,7 +66,12 @@ for (const f of await readdir(join(repo, '_locales'))) {
     await cp(join(repo, '_locales', f), join(app, 'locales', f))
 }
 
-await writeFile(join(app, 'manifest.toml'), 'name = "Delta Chat"\n')
+await writeFile(
+  join(app, 'manifest.toml'),
+  `name = "Delta Chat"
+source_code_url = "https://github.com/WofWca/DCXWebXDC"
+`
+)
 await cp(join(repo, 'images/deltachat.png'), join(app, 'icon.png'))
 
 await writeFile(xdc, await zip(app))
